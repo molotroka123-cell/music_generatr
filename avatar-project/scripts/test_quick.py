@@ -22,6 +22,13 @@ for d in [AVATAR_DIR, AUDIO_DIR, VIDEO_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 SEED = 777
+HEYGEN_KEY = None
+
+def get_heygen_key():
+    global HEYGEN_KEY
+    if not HEYGEN_KEY:
+        HEYGEN_KEY = os.getenv("HEYGEN_API_KEY")
+    return HEYGEN_KEY
 
 def step1_avatar():
     img_path = AVATAR_DIR / f"avatar_test_{SEED}.jpg"
@@ -94,38 +101,56 @@ def step2_voice():
     print(f"  [OK] Audio saved: {audio_path} ({size_kb:.1f} KB)")
     return str(audio_path)
 
-def upload_talking_photo(image_url):
-    """Upload image to HeyGen and get talking_photo_id."""
-    heygen_key = os.getenv("HEYGEN_API_KEY")
-    print("  Uploading photo to HeyGen...")
+def get_or_create_talking_photo(image_url):
+    """Get existing talking photo or upload a new one."""
+    key = get_heygen_key()
 
-    # Upload the image URL to HeyGen
-    resp = requests.post(
-        "https://api.heygen.com/v2/photo_avatar/talking_photo",
-        headers={"X-Api-Key": heygen_key, "Content-Type": "application/json"},
-        json={"image_url": image_url}
+    # First try to list existing talking photos
+    print("  Checking existing talking photos...")
+    list_resp = requests.get(
+        "https://api.heygen.com/v2/talking_photo",
+        headers={"X-Api-Key": key, "Accept": "application/json"}
     )
-    result = resp.json()
-    print(f"  Upload response: {json.dumps(result, indent=2)[:300]}")
+    if list_resp.status_code == 200:
+        try:
+            list_data = list_resp.json()
+            photos = list_data.get("data", {}).get("talking_photos", [])
+            if photos:
+                photo_id = photos[0].get("talking_photo_id", photos[0].get("id"))
+                print(f"  [OK] Found existing talking photo: {photo_id}")
+                return photo_id
+        except Exception:
+            pass
 
-    talking_photo_id = None
-    if result.get("data"):
-        talking_photo_id = result["data"].get("talking_photo_id")
+    # Upload new talking photo
+    print("  Uploading new talking photo...")
 
-    if not talking_photo_id:
-        # Try listing existing talking photos
-        print("  Trying to list existing talking photos...")
-        list_resp = requests.get(
-            "https://api.heygen.com/v2/photo_avatar/talking_photo",
-            headers={"X-Api-Key": heygen_key}
-        )
-        list_result = list_resp.json()
-        photos = list_result.get("data", {}).get("talking_photos", [])
-        if photos:
-            talking_photo_id = photos[0].get("talking_photo_id")
-            print(f"  Using existing photo: {talking_photo_id}")
+    # Download image first then upload as file
+    img_resp = requests.get(image_url)
+    if img_resp.status_code != 200:
+        print("  [FAIL] Could not download image for upload")
+        return None
 
-    return talking_photo_id
+    upload_resp = requests.post(
+        "https://api.heygen.com/v2/talking_photo",
+        headers={"X-Api-Key": key},
+        files={"file": ("avatar.jpg", img_resp.content, "image/jpeg")}
+    )
+    print(f"  Upload status: {upload_resp.status_code}")
+    if upload_resp.status_code == 200:
+        try:
+            data = upload_resp.json()
+            print(f"  Upload response: {json.dumps(data, indent=2)[:300]}")
+            photo_id = data.get("data", {}).get("talking_photo_id", data.get("data", {}).get("id"))
+            if photo_id:
+                print(f"  [OK] Uploaded: {photo_id}")
+                return photo_id
+        except Exception as e:
+            print(f"  [FAIL] Parse error: {e}")
+    else:
+        print(f"  [FAIL] Upload failed: {upload_resp.text[:300]}")
+
+    return None
 
 def step3_video(avatar_image_url, audio_path):
     out_path = VIDEO_DIR / f"video_test_{SEED}_tiktok.mp4"
@@ -134,20 +159,20 @@ def step3_video(avatar_image_url, audio_path):
         return str(out_path)
 
     print("\n[STEP 3] Creating talking video via HeyGen...")
-    heygen_key = os.getenv("HEYGEN_API_KEY")
+    key = get_heygen_key()
 
-    # Upload photo and get talking_photo_id
-    talking_photo_id = upload_talking_photo(avatar_image_url)
+    # Get or create talking photo
+    talking_photo_id = get_or_create_talking_photo(avatar_image_url)
     if not talking_photo_id:
         print("  [FAIL] Could not get talking_photo_id")
         return None
 
     print(f"  talking_photo_id: {talking_photo_id}")
 
-    # Create video with talking_photo_id
+    # Generate video
     response = requests.post(
         "https://api.heygen.com/v2/video/generate",
-        headers={"X-Api-Key": heygen_key, "Content-Type": "application/json"},
+        headers={"X-Api-Key": key, "Content-Type": "application/json"},
         json={
             "video_inputs": [{
                 "character": {
@@ -180,7 +205,7 @@ def step3_video(avatar_image_url, audio_path):
         print(".", end="", flush=True)
         status_resp = requests.get(
             "https://api.heygen.com/v1/video_status.get",
-            headers={"X-Api-Key": heygen_key},
+            headers={"X-Api-Key": key},
             params={"video_id": video_id}
         ).json()
         status = status_resp.get("data", {}).get("status")
