@@ -49,12 +49,30 @@ def step1_avatar():
 def step2_voice():
     from elevenlabs.client import ElevenLabs
     print("\n[STEP 2] Generating voice via ElevenLabs...")
-    text = "Privyet! Ya tvoy novy AI avatar. Rada poznakomitsya!"
+    text = "Privet! Ya tvoy noviy AI avatar. Rada poznakomitsya!"
     client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
-    audio_gen = client.text_to_speech.convert(text=text, voice_id="Rachel",
+
+    # Get available voices and pick first female voice
+    voices = client.voices.get_all()
+    voice_id = None
+    voice_name = None
+    for v in voices.voices:
+        if hasattr(v, 'labels') and v.labels and v.labels.get('gender') == 'female':
+            voice_id = v.voice_id
+            voice_name = v.name
+            break
+    if not voice_id:
+        # Fallback: use first available voice
+        voice_id = voices.voices[0].voice_id
+        voice_name = voices.voices[0].name
+
+    print(f"  Voice: {voice_name} ({voice_id})")
+    print(f"  Text: {text}")
+
+    audio_gen = client.text_to_speech.convert(text=text, voice_id=voice_id,
         model_id="eleven_multilingual_v2", voice_settings={"stability": 0.71,
         "similarity_boost": 0.85, "style": 0.35, "use_speaker_boost": True})
-    audio_path = AUDIO_DIR / "audio_test_rachel_ru.mp3"
+    audio_path = AUDIO_DIR / "audio_test_voice_ru.mp3"
     with open(audio_path, "wb") as f:
         for chunk in audio_gen:
             f.write(chunk)
@@ -70,17 +88,20 @@ def step3_video(avatar_image_url, audio_path):
         json={"video_inputs": [{"character": {"type": "talking_photo",
             "talking_photo_url": avatar_image_url},
             "voice": {"type": "text",
-            "input_text": "Privyet! Ya tvoy novy AI avatar. Rada poznakomitsya!",
+            "input_text": "Privet! Ya tvoy noviy AI avatar. Rada poznakomitsya!",
             "voice_id": "c19c75b03ea446a8b62b0b4e1e9c2fba"}}],
             "dimension": {"width": 1080, "height": 1920}})
     result = response.json()
+    print(f"  HeyGen response: {json.dumps(result, indent=2)[:500]}")
     video_id = result.get("data", {}).get("video_id")
     if not video_id:
-        print(f"  [FAIL] No video_id. Response: {result}")
+        print(f"  [FAIL] No video_id")
         return None
     print(f"  [OK] Job started: {video_id}")
+    print("  Waiting for render", end="", flush=True)
     for i in range(60):
         time.sleep(5)
+        print(".", end="", flush=True)
         status_resp = requests.get("https://api.heygen.com/v1/video_status.get",
             headers={"X-Api-Key": heygen_key}, params={"video_id": video_id}).json()
         status = status_resp.get("data", {}).get("status")
@@ -90,11 +111,13 @@ def step3_video(avatar_image_url, audio_path):
             vid_resp = requests.get(video_url)
             if vid_resp.status_code == 200:
                 out_path.write_bytes(vid_resp.content)
-                print(f"  [OK] Saved: {out_path}")
+                print(f"\n  [OK] Saved: {out_path}")
             return str(out_path)
         elif status == "failed":
-            print(f"  [FAIL] Render failed")
+            error = status_resp.get("data", {}).get("error", "unknown")
+            print(f"\n  [FAIL] Render failed: {error}")
             return None
+    print("\n  [FAIL] Timeout")
     return None
 
 def main():
