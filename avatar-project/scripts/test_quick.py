@@ -6,7 +6,6 @@ import os
 import sys
 import json
 import time
-import base64
 import requests
 from pathlib import Path
 from dotenv import load_dotenv
@@ -90,103 +89,24 @@ def step2_voice():
     print(f"  [OK] Audio saved: {audio_path} ({size_kb:.1f} KB)")
     return str(audio_path)
 
-def get_talking_photo_id(local_image_path):
-    """Upload image to HeyGen and get talking_photo_id."""
+def get_heygen_voice_id():
+    """Get a working female voice from HeyGen."""
     key = get_key()
-
-    # Step 1: List existing avatars
-    print("  Checking existing talking photos...")
     try:
-        r = requests.get(
-            "https://api.heygen.com/v2/avatars",
-            headers={"X-Api-Key": key, "Accept": "application/json"}
-        )
+        r = requests.get("https://api.heygen.com/v2/voices",
+            headers={"X-Api-Key": key})
         if r.status_code == 200:
-            data = r.json()
-            avatars = data.get("data", {}).get("avatars", [])
-            for av in avatars:
-                if av.get("avatar_type") == "talking_photo":
-                    photo_id = av.get("avatar_id", av.get("talking_photo_id"))
-                    if photo_id:
-                        print(f"  [OK] Found existing talking photo: {photo_id}")
-                        return photo_id
-            print(f"  No talking photos found. Total avatars: {len(avatars)}")
-            # Show what types exist
-            types = set(av.get("avatar_type", "unknown") for av in avatars)
-            if types:
-                print(f"  Avatar types found: {types}")
+            voices = r.json().get("data", {}).get("voices", [])
+            # Prefer female voice
+            for v in voices:
+                if v.get("gender") == "female":
+                    print(f"  HeyGen voice: {v['name'].strip()} ({v['voice_id']})")
+                    return v["voice_id"]
+            # Fallback to first voice
+            if voices:
+                return voices[0]["voice_id"]
     except Exception as e:
-        print(f"  List failed: {e}")
-
-    # Step 2: Try v1 talking photo list
-    print("  Trying v1 talking photo list...")
-    try:
-        r = requests.get(
-            "https://api.heygen.com/v1/talking_photo.list",
-            headers={"X-Api-Key": key, "Accept": "application/json"}
-        )
-        print(f"  v1 list -> {r.status_code}")
-        if r.status_code == 200:
-            data = r.json()
-            print(f"  v1 response: {json.dumps(data, indent=2)[:500]}")
-            photos = data.get("data", {}).get("talking_photos", data.get("data", {}).get("list", []))
-            if isinstance(photos, list) and photos:
-                photo_id = photos[0].get("talking_photo_id", photos[0].get("id"))
-                if photo_id:
-                    print(f"  [OK] Found: {photo_id}")
-                    return photo_id
-    except Exception as e:
-        print(f"  v1 list failed: {e}")
-
-    # Step 3: Upload via multiple methods
-    print("  Uploading talking photo...")
-    with open(local_image_path, "rb") as f:
-        image_data = f.read()
-    image_b64 = base64.b64encode(image_data).decode("utf-8")
-
-    attempts = [
-        # Method 1: upload.heygen.com multipart with 'image'
-        {"url": "https://upload.heygen.com/v1/talking_photo",
-         "method": "multipart", "field": "image", "desc": "upload.heygen multipart image"},
-        # Method 2: upload.heygen.com multipart with 'file'
-        {"url": "https://upload.heygen.com/v1/talking_photo",
-         "method": "multipart", "field": "file", "desc": "upload.heygen multipart file"},
-        # Method 3: api.heygen.com JSON with base64
-        {"url": "https://api.heygen.com/v1/talking_photo",
-         "method": "json_b64", "desc": "api.heygen json base64"},
-        # Method 4: api.heygen.com JSON with image_url (use data URI)
-        {"url": "https://api.heygen.com/v2/talking_photo",
-         "method": "json_b64", "desc": "api.heygen v2 json base64"},
-        # Method 5: upload asset then use it
-        {"url": "https://upload.heygen.com/v1/asset",
-         "method": "multipart", "field": "file", "desc": "upload asset"},
-    ]
-
-    for attempt in attempts:
-        desc = attempt["desc"]
-        url = attempt["url"]
-        try:
-            if attempt["method"] == "multipart":
-                r = requests.post(url,
-                    headers={"X-Api-Key": key, "Accept": "application/json"},
-                    files={attempt["field"]: ("avatar.jpg", image_data, "image/jpeg")})
-            elif attempt["method"] == "json_b64":
-                r = requests.post(url,
-                    headers={"X-Api-Key": key, "Content-Type": "application/json"},
-                    json={"image": f"data:image/jpeg;base64,{image_b64}"})
-
-            print(f"  [{desc}] -> {r.status_code}")
-            if r.status_code in [200, 201]:
-                data = r.json()
-                print(f"  Response: {json.dumps(data, indent=2)[:400]}")
-                d = data.get("data", data)
-                for id_key in ["talking_photo_id", "id", "asset_id", "avatar_id"]:
-                    if d.get(id_key):
-                        print(f"  [OK] Got ID: {d[id_key]}")
-                        return d[id_key]
-        except Exception as e:
-            print(f"  [{desc}] error: {e}")
-
+        print(f"  Voice list error: {e}")
     return None
 
 def step3_video(local_image_path, audio_path):
@@ -198,27 +118,34 @@ def step3_video(local_image_path, audio_path):
     print("\n[STEP 3] Creating talking video via HeyGen...")
     key = get_key()
 
-    # Check for manual photo ID in env
-    photo_id_env = os.getenv("HEYGEN_PHOTO_ID")
-    if photo_id_env:
-        talking_photo_id = photo_id_env
-        print(f"  Using HEYGEN_PHOTO_ID from env: {talking_photo_id}")
-    else:
-        talking_photo_id = get_talking_photo_id(local_image_path)
+    # Get talking photo ID
+    talking_photo_id = os.getenv("HEYGEN_PHOTO_ID")
+    if not talking_photo_id:
+        # Try to find from API
+        try:
+            r = requests.get("https://api.heygen.com/v1/talking_photo.list",
+                headers={"X-Api-Key": key})
+            if r.status_code == 200:
+                photos = r.json().get("data", {}).get("talking_photos", [])
+                non_preset = [p for p in photos if not p.get("is_preset")]
+                if non_preset:
+                    talking_photo_id = non_preset[0]["id"]
+                elif photos:
+                    talking_photo_id = photos[-1]["id"]
+        except Exception:
+            pass
 
     if not talking_photo_id:
-        print("  [FAIL] Could not get talking_photo_id")
-        print("")
-        print("  MANUAL FIX:")
-        print("  1. Go to app.heygen.com -> Assets -> Talking Photos")
-        print("  2. Upload avatar_test_777.jpg")
-        print("  3. Click on it, copy the ID from the URL")
-        print("  4. Add to config/api_keys.env:")
-        print("     HEYGEN_PHOTO_ID=your_photo_id_here")
-        print("  5. Re-run this script")
+        print("  [FAIL] No talking_photo_id. Set HEYGEN_PHOTO_ID in api_keys.env")
         return None
 
     print(f"  talking_photo_id: {talking_photo_id}")
+
+    # Get a working voice
+    heygen_voice_id = get_heygen_voice_id()
+    if not heygen_voice_id:
+        print("  [FAIL] No HeyGen voice found")
+        return None
 
     # Generate video
     response = requests.post(
@@ -233,7 +160,7 @@ def step3_video(local_image_path, audio_path):
                 "voice": {
                     "type": "text",
                     "input_text": "Privet! Ya tvoy noviy AI avatar. Rada poznakomitsya!",
-                    "voice_id": "c19c75b03ea446a8b62b0b4e1e9c2fba"
+                    "voice_id": heygen_voice_id
                 }
             }],
             "dimension": {"width": 1080, "height": 1920}
