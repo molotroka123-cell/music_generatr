@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Quick test: generate avatar photo -> voice -> 3s video."""
+"""Quick test: generate avatar photo -> voice -> 3s video.
+Supports resuming from any step."""
 
 import os
 import sys
@@ -7,7 +8,6 @@ import json
 import time
 import requests
 from pathlib import Path
-from datetime import datetime
 from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -24,6 +24,21 @@ for d in [AVATAR_DIR, AUDIO_DIR, VIDEO_DIR]:
 SEED = 777
 
 def step1_avatar():
+    # Check if already exists
+    img_path = AVATAR_DIR / f"avatar_test_{SEED}.jpg"
+    if img_path.exists() and img_path.stat().st_size > 0:
+        print(f"\n[STEP 1] SKIP - avatar already exists: {img_path}")
+        # We need the URL for HeyGen, re-generate it
+        import replicate
+        prompt = ("Professional portrait photo of a beautiful young woman, 25 years old, "
+            "light brown wavy hair, warm green eyes, soft smile, gentle expression, "
+            "wearing a cozy cream sweater, natural soft lighting, shallow depth of field, "
+            "clean minimal background, photorealistic, 8k, shot on Canon EOS R5")
+        output = replicate.run("black-forest-labs/flux-1.1-pro", input={
+            "prompt": prompt, "aspect_ratio": "2:3", "output_format": "jpg",
+            "output_quality": 100, "safety_tolerance": 3, "prompt_upsampling": True, "seed": SEED})
+        return str(img_path), str(output)
+
     import replicate
     print("\n[STEP 1] Generating avatar photo via FLUX.1...")
     prompt = ("Professional portrait photo of a beautiful young woman, 25 years old, "
@@ -36,7 +51,6 @@ def step1_avatar():
         "output_quality": 100, "safety_tolerance": 3, "prompt_upsampling": True, "seed": SEED})
     image_url = str(output)
     print(f"  [OK] Image generated")
-    img_path = AVATAR_DIR / f"avatar_test_{SEED}.jpg"
     resp = requests.get(image_url)
     if resp.status_code == 200:
         img_path.write_bytes(resp.content)
@@ -47,6 +61,12 @@ def step1_avatar():
     return str(img_path), image_url
 
 def step2_voice():
+    # Check if already exists
+    audio_path = AUDIO_DIR / "audio_test_voice_ru.mp3"
+    if audio_path.exists() and audio_path.stat().st_size > 0:
+        print(f"\n[STEP 2] SKIP - audio already exists: {audio_path}")
+        return str(audio_path)
+
     from elevenlabs.client import ElevenLabs
     print("\n[STEP 2] Generating voice via ElevenLabs...")
     text = "Privet! Ya tvoy noviy AI avatar. Rada poznakomitsya!"
@@ -62,7 +82,6 @@ def step2_voice():
             voice_name = v.name
             break
     if not voice_id:
-        # Fallback: use first available voice
         voice_id = voices.voices[0].voice_id
         voice_name = voices.voices[0].name
 
@@ -72,7 +91,6 @@ def step2_voice():
     audio_gen = client.text_to_speech.convert(text=text, voice_id=voice_id,
         model_id="eleven_multilingual_v2", voice_settings={"stability": 0.71,
         "similarity_boost": 0.85, "style": 0.35, "use_speaker_boost": True})
-    audio_path = AUDIO_DIR / "audio_test_voice_ru.mp3"
     with open(audio_path, "wb") as f:
         for chunk in audio_gen:
             f.write(chunk)
@@ -81,6 +99,12 @@ def step2_voice():
     return str(audio_path)
 
 def step3_video(avatar_image_url, audio_path):
+    # Check if already exists
+    out_path = VIDEO_DIR / f"video_test_{SEED}_tiktok.mp4"
+    if out_path.exists() and out_path.stat().st_size > 0:
+        print(f"\n[STEP 3] SKIP - video already exists: {out_path}")
+        return str(out_path)
+
     print("\n[STEP 3] Creating talking video via HeyGen...")
     heygen_key = os.getenv("HEYGEN_API_KEY")
     response = requests.post("https://api.heygen.com/v2/video/generate",
@@ -107,7 +131,6 @@ def step3_video(avatar_image_url, audio_path):
         status = status_resp.get("data", {}).get("status")
         if status == "completed":
             video_url = status_resp["data"]["video_url"]
-            out_path = VIDEO_DIR / f"video_test_{SEED}_tiktok.mp4"
             vid_resp = requests.get(video_url)
             if vid_resp.status_code == 200:
                 out_path.write_bytes(vid_resp.content)
@@ -123,6 +146,7 @@ def step3_video(avatar_image_url, audio_path):
 def main():
     print("=" * 55)
     print("  AI Avatar Pipeline - Test Run")
+    print("  (auto-skips completed steps)")
     print("=" * 55)
     keys = ["REPLICATE_API_TOKEN", "ELEVENLABS_API_KEY", "HEYGEN_API_KEY"]
     missing = [k for k in keys if not os.getenv(k)]
