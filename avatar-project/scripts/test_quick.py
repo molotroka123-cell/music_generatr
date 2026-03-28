@@ -93,7 +93,7 @@ def get_talking_photo_id(local_image_path):
     """Upload image to HeyGen and get talking_photo_id."""
     key = get_key()
 
-    # Step 1: Check existing talking photos
+    # Step 1: Check existing talking photos via v2 avatars
     print("  Checking existing talking photos...")
     try:
         r = requests.get(
@@ -112,52 +112,65 @@ def get_talking_photo_id(local_image_path):
     except Exception as e:
         print(f"  List check failed: {e}")
 
-    # Step 2: Upload to upload.heygen.com (correct domain!)
+    # Step 2: Upload talking photo - try different field names
     print("  Uploading talking photo to upload.heygen.com...")
     with open(local_image_path, "rb") as f:
+        image_data = f.read()
+
+    # Try multiple field name variations
+    field_names = ["image", "file", "photo", "talking_photo"]
+    for field_name in field_names:
         r = requests.post(
             "https://upload.heygen.com/v1/talking_photo",
-            headers={
-                "X-Api-Key": key,
-                "Accept": "application/json"
-            },
-            files={"file": ("avatar.jpg", f, "image/jpeg")}
+            headers={"X-Api-Key": key, "Accept": "application/json"},
+            files={field_name: ("avatar.jpg", image_data, "image/jpeg")}
         )
-
-    print(f"  Upload status: {r.status_code}")
-    if r.status_code == 200:
-        try:
-            data = r.json()
-            print(f"  Response: {json.dumps(data, indent=2)[:400]}")
-            if data.get("code") == 100 or data.get("data"):
+        print(f"  Field '{field_name}' -> status {r.status_code}")
+        if r.status_code == 200:
+            try:
+                data = r.json()
+                print(f"  Response: {json.dumps(data, indent=2)[:400]}")
                 d = data.get("data", {})
                 photo_id = d.get("talking_photo_id", d.get("id"))
                 if photo_id:
                     print(f"  [OK] Uploaded: {photo_id}")
                     return photo_id
-        except Exception as e:
-            print(f"  Parse error: {e}")
-    else:
-        try:
-            print(f"  Error: {r.text[:400]}")
-        except Exception:
-            print(f"  Error: status {r.status_code}")
+            except Exception as e:
+                print(f"  Parse error: {e}")
+        else:
+            try:
+                err = r.json()
+                msg = err.get("message", str(err))
+                # If we get a different error than "must be provided", log it
+                if "must be provided" not in msg:
+                    print(f"  Error: {msg[:200]}")
+            except Exception:
+                pass
 
-    # Step 3: Try asset upload as fallback
-    print("  Trying asset upload fallback...")
-    with open(local_image_path, "rb") as f:
-        r = requests.post(
-            "https://upload.heygen.com/v1/asset",
-            headers={"X-Api-Key": key},
-            files={"file": ("avatar.jpg", f, "image/jpeg")}
-        )
-    print(f"  Asset upload status: {r.status_code}")
+    # Step 3: Try via v1 asset upload + then create talking photo from asset
+    print("  Trying asset upload method...")
+    r = requests.post(
+        "https://upload.heygen.com/v1/asset",
+        headers={"X-Api-Key": key},
+        files={"file": ("avatar.jpg", image_data, "image/jpeg")}
+    )
+    print(f"  Asset upload -> status {r.status_code}")
     if r.status_code == 200:
         try:
             data = r.json()
-            print(f"  Response: {json.dumps(data, indent=2)[:400]}")
-        except Exception:
-            pass
+            print(f"  Asset response: {json.dumps(data, indent=2)[:400]}")
+            asset_id = data.get("data", {}).get("asset_id", data.get("data", {}).get("id"))
+            if asset_id:
+                print(f"  Asset ID: {asset_id}")
+                # Now try to create talking photo from asset
+                r2 = requests.post(
+                    "https://api.heygen.com/v2/photo_avatar/talking_photo",
+                    headers={"X-Api-Key": key, "Content-Type": "application/json"},
+                    json={"asset_id": asset_id}
+                )
+                print(f"  Create from asset -> {r2.status_code}: {r2.text[:300]}")
+        except Exception as e:
+            print(f"  Error: {e}")
 
     return None
 
@@ -170,13 +183,24 @@ def step3_video(local_image_path, audio_path):
     print("\n[STEP 3] Creating talking video via HeyGen...")
     key = get_key()
 
-    # Get talking photo ID
-    talking_photo_id = get_talking_photo_id(local_image_path)
+    # Check for manual photo ID in env
+    photo_id_env = os.getenv("HEYGEN_PHOTO_ID")
+    if photo_id_env:
+        talking_photo_id = photo_id_env
+        print(f"  Using HEYGEN_PHOTO_ID from env: {talking_photo_id}")
+    else:
+        talking_photo_id = get_talking_photo_id(local_image_path)
+
     if not talking_photo_id:
         print("  [FAIL] Could not get talking_photo_id")
-        print("  TIP: Go to app.heygen.com -> Assets -> Talking Photos")
-        print("  Upload avatar_test_777.jpg manually, copy the ID, and")
-        print("  set it as HEYGEN_PHOTO_ID in config/api_keys.env")
+        print("")
+        print("  MANUAL FIX:")
+        print("  1. Go to app.heygen.com -> Assets -> Talking Photos")
+        print("  2. Upload avatar_test_777.jpg")
+        print("  3. Click on it, copy the ID from the URL")
+        print("  4. Add to config/api_keys.env:")
+        print("     HEYGEN_PHOTO_ID=your_photo_id_here")
+        print("  5. Re-run this script")
         return None
 
     print(f"  talking_photo_id: {talking_photo_id}")
